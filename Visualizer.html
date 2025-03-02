@@ -87,11 +87,10 @@
 
     function generate() {
       const seed = document.getElementById("seed").value;
-      const problemType = document.getElementById("problem-type").value;
-      const input = wasm_gen(seed, problemType);
+      const input = wasm_gen(seed);
       document.getElementById("input").value = input;
       let paddedSeed = seed.toString().padStart(4, '0'); // 4桁で頭0埋め
-      const filePath = "../out" + problemType + "/" + paddedSeed + ".txt";
+      const filePath = "../out/" + paddedSeed + ".txt";
       fetch(filePath)
         .then(response => {
           if (!response.ok) {
