@@ -1,0 +1,210 @@
+<html>
+<head>
+  <title>Visualizer</title>
+  <meta content="text/html;charset=utf-8" http-equiv="Content-Type" />
+  <script src="./Visualizer_files/jquery-1.9.1.min.js"></script>
+  <style type="text/css">
+  </style>
+</head>
+
+<body>
+  <div style="display:flex; gap:20px;">
+    <label>
+      Seed:<br>
+      <input type="number" id="seed" style="width:80px;" value="0" min="0" max="18446744073709551615" onchange="generate()" />
+    </label>
+    <label>
+      Input:<br>
+      <textarea id="input" rows="4" style="width:350px;" data-gramm_editor="false" oninput="updateOutput()"></textarea>
+    </label>
+    <label>
+      Output:<br>
+      <textarea id="output" rows="4" style="width:350px;" data-gramm_editor="false" oninput="updateOutput()"></textarea>
+    </label>
+  </div>
+  <p style="display:flex;">
+    <input type="button" id="play" value="▶" style="width:32px;height:32px;bottom:5px;position:relative;">&ensp;
+    <label>
+      slow
+      <input type="range" id="speed" min="1" max="30" value="15" style="width:200px;">
+      fast
+    </label>&ensp;
+    <label>
+      turn:
+      <input type="number" id="turn" value="0" min="0" max="0" style="width:70px;text-align:right;"
+        onchange="update_t(this.value)" />
+    </label>
+  </p>
+  <p>
+    <input type="range" id="t_bar" min="0" max="0" value="0" style="width:780px;" onchange="update_t(this.value)"
+      oninput="update_t(this.value)">
+  </p>
+  <hr>
+  <div style="display: flex;">
+    <div style="flex: 0 0 850px">
+      <div id="svgContainer"></div>
+    </div>
+    <div style="flex: 1">
+      <p id="scoreTrue"></p>
+      <p id="score"></p>
+      <p id="action"></p>
+      <textarea id="info" rows="2" style="width:300px" data-gramm_editor="false" readonly></textarea>
+    </div>
+  </div>
+  <br>
+  <script src='./Visualizer_files/gif.js'></script>
+  <script src='./Visualizer_files/jszip.min.js'></script>
+  <script type="module">
+    var lang = (new URL(document.location)).searchParams.get("lang");
+    if (lang == null) {
+      lang = "ja";
+    }
+    if (lang == "ja") {
+      $(".lang-en").hide();
+    } else {
+      $(".lang-ja").hide();
+    }
+
+    // TODO 問題に応じて追加
+    import init, { wasm_gen, wasm_compute_score } from './tools.js';
+
+    async function run() {
+      await init();
+      document.getElementById("scoreTrue").innerHTML = "Score True = 0";
+      document.getElementById("score").innerHTML = "s[t] = 0";
+      if ((new URL(document.location)).searchParams.get("seed") != null) {
+        document.getElementById("seed").value = (new URL(document.location)).searchParams.get("seed");
+      }
+      const output = (new URL(document.location)).searchParams.get("output");
+      if (output != null) {
+        document.getElementById("output").value = output;
+      }
+      if (document.getElementById("input").value == "") {
+        generate();
+      } else {
+        updateOutput();
+      }
+    }
+    run();
+
+    function generate() {
+      const seed = document.getElementById("seed").value;
+      const problemType = document.getElementById("problem-type").value;
+      const input = wasm_gen(seed, problemType);
+      document.getElementById("input").value = input;
+      let paddedSeed = seed.toString().padStart(4, '0'); // 4桁で頭0埋め
+      const filePath = "../out" + problemType + "/" + paddedSeed + ".txt";
+      fetch(filePath)
+        .then(response => {
+          if (!response.ok) {
+            throw new Error("Network response was not ok");
+          }
+          return response.text();
+        })
+        .then(text => {
+          document.getElementById("output").value = text;
+          updateOutput();
+        })
+        .catch(error => {
+          console.log("file not found " + filePath, error);
+          document.getElementById("output").value = "";
+          updateOutput();
+        });
+    }
+    window.generate = generate;
+
+    function visualize() {
+      const input = document.getElementById("input").value;
+      const output = document.getElementById("output").value;
+      const t = Number(document.getElementById("turn").value);
+      try {
+        const all = wasm_compute_score(input, output);
+        document.getElementById("svgContainer").innerHTML = "";
+        const ret = vis(input, output, t); 
+        document.getElementById("scoreTrue").innerHTML = "Score True = " + all.score;
+        document.getElementById("score").innerHTML = "s[t] = " + ret.score_t;
+        document.getElementById("info").value = "Error = " + all.error;
+        document.getElementById("svgContainer").appendChild(ret.svgjs);
+        console.log(all.error);
+      } catch (error) {
+        const ret = wasm_compute_score(input, output);
+        document.getElementById("scoreTrue").innerHTML = "Score True = " + ret.score;
+        document.getElementById("score").innerHTML = "s[t] = " + ret.score;
+        document.getElementById("info").value = "Error = " + all.error;
+        console.log(ret.error);
+        console.log(error);
+        document.getElementById("svgContainer").innerHTML = "<p>Invalid</p>";
+      }
+    }
+    window.visualize = visualize;
+
+    function update_t(t) {
+      const max_turn = Number(document.getElementById("turn").max);
+      const new_turn = Math.min(Math.max(0, t), max_turn);
+      document.getElementById("turn").value = new_turn;
+      document.getElementById("t_bar").value = new_turn;
+      visualize();
+    }
+    window.update_t = update_t;
+
+    var prev = Date.now();
+    const play = document.getElementById("play");
+    const speed = document.getElementById("speed");
+
+    function start_autoplay() {
+      if (Number(document.getElementById("turn").value) >= Number(document.getElementById("turn").max)) {
+        document.getElementById("turn").value = 0;
+      }
+      prev = Date.now();
+      play.value = "■";
+      update_t(document.getElementById("turn").value);
+    }
+    window.start_autoplay = start_autoplay;
+
+    function updateOutput() {
+      play.value = "▶";
+      const input = document.getElementById("input").value;
+      const output = document.getElementById("output").value;
+      try {
+        const t = wasm_compute_score(input, output).max_turn;
+        document.getElementById("turn").max = t;
+        document.getElementById("t_bar").max = t;
+        update_t(t);
+      } catch (error) {
+        document.getElementById("svgContainer").innerHTML = "<p>Invalid</p>";
+        document.getElementById("comment").value = error.message;
+      }
+    }
+    window.updateOutput = updateOutput;
+
+    play.onclick = event => {
+      if (play.value == "■") {
+        play.value = "▶";
+      } else {
+        start_autoplay();
+      }
+    }
+
+    function autoplay() {
+      if (play.value == "■") {
+        const now = Date.now();
+        let s = 2000;
+        if ((now - prev) * speed.value >= s) {
+          const inc = Math.floor((now - prev) * speed.value / s);
+          prev += Math.floor(inc * s / speed.value);
+          update_t(Number(document.getElementById("turn").value) + inc);
+          if (Number(document.getElementById("turn").value) >= Number(document.getElementById("turn").max)) {
+            play.value = "▶";
+          }
+        }
+      }
+      requestAnimationFrame(autoplay);
+    }
+    autoplay();
+
+    function vis(input, output, t) {
+      // TODO 問題に応じて作成
+    }
+  </script>
+</body>
+</html>
