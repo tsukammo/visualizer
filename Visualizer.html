@@ -169,7 +169,7 @@
         update_t(t);
       } catch (error) {
         document.getElementById("svgContainer").innerHTML = "<p>Invalid</p>";
-        document.getElementById("comment").value = error.message;
+        document.getElementById("info").value = error.message;
       }
     }
     window.updateOutput = updateOutput;
