@@ -127,7 +127,7 @@
         const ret = wasm_compute_score(input, output);
         document.getElementById("scoreTrue").innerHTML = "Score True = " + ret.score;
         document.getElementById("score").innerHTML = "s[t] = " + ret.score;
-        document.getElementById("info").value = "Error = " + all.error;
+        document.getElementById("info").value = "Error = " + ret.error;
         console.log(ret.error);
         console.log(error);
         document.getElementById("svgContainer").innerHTML = "<p>Invalid</p>";
