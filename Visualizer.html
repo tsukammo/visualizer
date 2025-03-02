@@ -14,6 +14,14 @@
       <input type="number" id="seed" style="width:80px;" value="0" min="0" max="18446744073709551615" onchange="generate()" />
     </label>
     <label>
+      問題種別:
+      <select id="problem-type" onchange="generate()">
+        <option value="A" selected>A</option>
+        <option value="B">B</option>
+        <option value="C">C</option>
+      </select>
+    </label>
+    <label>
       Input:<br>
       <textarea id="input" rows="4" style="width:350px;" data-gramm_editor="false" oninput="updateOutput()"></textarea>
     </label>
@@ -87,7 +95,8 @@
 
     function generate() {
       const seed = document.getElementById("seed").value;
-      const input = wasm_gen(seed);
+      const problemType = document.getElementById("problem-type").value;
+      const input = wasm_gen(seed, problemType);
       document.getElementById("input").value = input;
       let paddedSeed = seed.toString().padStart(4, '0'); // 4桁で頭0埋め
       const filePath = "../out/" + paddedSeed + ".txt";
@@ -200,7 +209,280 @@
     autoplay();
 
     function vis(input, output, t) {
-      // TODO 問題に応じて作成
+      
+      try {
+        // --- 入力のパース ---
+        // 入力は1行目に「N M」、その後 N 行の文字列（各文字が盤面のセル）
+        const lines = input.split('\n').filter(line => line.trim().length > 0);
+        const header = lines[0].trim().split(/\s+/);
+        if (header.length < 2) throw new Error("Input header format invalid");
+        const N = parseInt(header[0], 10);
+        const M = parseInt(header[1], 10);
+        const boardLines = lines.slice(1, 1 + N);
+        
+        // 盤面を「base」と「object」2層で管理する
+        // base : 盤面背景（穴がある場合はアルファベット大文字、その他は '.'）
+        // objectBoard : 盤面上の岩・鉱石（'@' あるいは小文字）、存在しなければ null
+        const base = [];
+        const objectBoard = [];
+        for (let i = 0; i < N; i++) {
+          base.push([]);
+          objectBoard.push([]);
+          for (let j = 0; j < N; j++) {
+            const ch = boardLines[i][j];
+            if (ch >= 'A' && ch <= 'Z') {
+              base[i].push(ch);
+              objectBoard[i].push(null);
+            } else if (ch === '.') {
+              base[i].push('.');
+              objectBoard[i].push(null);
+            } else if (ch === '@' || (ch >= 'a' && ch <= 'z')) {
+              base[i].push('.');
+              objectBoard[i].push(ch);
+            } else {
+              throw new Error("Invalid board character: " + ch);
+            }
+          }
+        }
+        // プレイヤーの初期位置は「穴 A」のある箇所
+        let player = null;
+        for (let i = 0; i < N; i++) {
+          for (let j = 0; j < N; j++) {
+            if (base[i][j] === 'A') {
+              player = [i, j];
+              break;
+            }
+          }
+          if (player) break;
+        }
+        if (!player) throw new Error("Player starting position (hole A) not found");
+        
+        // 初期の鉱石総数 K（objectBoard上で小文字があるセルの数）
+        let K = 0;
+        for (let i = 0; i < N; i++) {
+          for (let j = 0; j < N; j++) {
+            const obj = objectBoard[i][j];
+            if (obj !== null && obj >= 'a' && obj <= 'z') {
+              K++;
+            }
+          }
+        }
+        
+        // --- 出力のパースとシミュレーション ---
+        // 各行は「動作番号」と「方向」で与えられる (例："1 R", "2 L", "3 U")
+        const moveLines = output.split('\n').map(line => line.trim()).filter(line => line.length > 0);
+        const moves = moveLines.map(line => line.split(/\s+/));
+        const movesToSimulate = Math.min(t, moves.length);
+        let movesExecuted = 0;
+        let droppedCorrect = 0;
+        let rollArrowData = null; // 追加: 転がすアクションの矢印情報を保持するための変数
+        
+        // 方向マッピング
+        const dirMap = { "U": [-1, 0], "D": [1, 0], "L": [0, -1], "R": [0, 1] };
+        
+        // 各操作のシミュレーション
+        for (let i = 0; i < movesToSimulate; i++) {
+          const tokens = moves[i];
+          if (tokens.length < 2) continue;
+          const action = tokens[0];
+          const d = tokens[1];
+          if (!(d in dirMap)) continue;
+          const [dr, dc] = dirMap[d];
+          if (action === "1") { 
+            // 移動：プレイヤーの位置を1マス移動（移動先は必ず境界内と仮定）
+            const nr = player[0] + dr, nc = player[1] + dc;
+            if (nr < 0 || nr >= N || nc < 0 || nc >= N) continue;
+            player = [nr, nc];
+          } else if (action === "2") { 
+            // 運ぶ：現在位置にオブジェクトがある場合、隣接マスへ運ぶ
+            const [r, c] = player;
+            if (objectBoard[r][c] === null) continue;
+            const nr = r + dr, nc = c + dc;
+            if (nr < 0 || nr >= N || nc < 0 || nc >= N) continue;
+            if (objectBoard[nr][nc] !== null) continue; // 既にオブジェクトがあるなら無効
+            const obj = objectBoard[r][c];
+            objectBoard[r][c] = null;
+            if (base[nr][nc] !== '.') {
+              // 運んだ先が穴の場合、オブジェクトは落ちる
+              if (obj >= 'a' && obj <= 'z' && base[nr][nc] === obj.toUpperCase()) {
+                droppedCorrect++;
+              }
+              // 岩の場合は落としてもスコアには影響しない
+            } else {
+              // 空マスならそのまま配置
+              objectBoard[nr][nc] = obj;
+            }
+            // プレイヤーは運んだ先へ移動
+            player = [nr, nc];
+          } else if (action === "3") { 
+            // 転がす：現在位置のオブジェクトを指定方向へ転がす（プレイヤー位置は変わらない）
+            const [r, c] = player;
+            const isCurrentTurnRoll = (i === movesToSimulate - 1); // 現在のターンかどうかのフラグ
+            if (objectBoard[r][c] === null) continue;
+            const obj = objectBoard[r][c];
+            let pos = [r, c];
+            let rolled = false;
+            let currentRollArrowEnd = [r, c]; // 矢印の終点の初期値はプレイヤーの位置
+            while (true) {
+              const nr = pos[0] + dr, nc = pos[1] + dc;
+              if (nr < 0 || nr >= N || nc < 0 || nc >= N) {
+                currentRollArrowEnd = pos; // 外に出るなら直前の位置を終点とする
+                break;
+              }
+              if (objectBoard[nr][nc] !== null) {
+                currentRollArrowEnd = pos; // 他のオブジェクトがあるなら停止し直前の位置を終点とする
+                break;
+              }
+              if (base[nr][nc] !== '.') {
+                currentRollArrowEnd = [nr, nc]; // 穴の場合、穴の位置を終点とする
+                if (obj >= 'a' && obj <= 'z' && base[nr][nc] === obj.toUpperCase()) {
+                  droppedCorrect++;
+                }
+                objectBoard[r][c] = null;
+                rolled = true;
+                break;
+              }
+              pos = [nr, nc];
+              rolled = true;
+              currentRollArrowEnd = pos; // 移動後の位置を更新
+            }
+            // 落ちなかった場合、初期セル(r,c)から最終位置 pos へ移動する
+            if (rolled && objectBoard[r][c] !== null) {
+              if (pos[0] !== r || pos[1] !== c) {
+                objectBoard[r][c] = null;
+                objectBoard[pos[0]][pos[1]] = obj;
+              }
+            }
+            // 現在のターンが転がすアクションの場合、矢印の情報を記録する
+            if (isCurrentTurnRoll) {
+              rollArrowData = {
+                startRow: r,
+                startCol: c,
+                endRow: currentRollArrowEnd[0],
+                endCol: currentRollArrowEnd[1]
+              };
+            }
+          }
+          movesExecuted++;
+        }
+        const T_used = movesExecuted;
+        
+        // --- スコア計算 ---
+        // 全ての鉱石が正しい穴 (対応する大文字と一致) に落ちれば score = round(1e6 * (1 + log2(T_used/10000))),
+        // そうでなければ score = round(1e6 * (K / A)) （A==0 の場合は Infinity とする）
+        let score_t;
+        if (droppedCorrect === K && K > 0) {
+          score_t = Math.round(1e6 * (1 + Math.log2(10000/T_used)));
+        } else {
+          score_t = droppedCorrect === 0 ? Infinity : Math.round(1e6 * (droppedCorrect/K));
+        }
+        
+        // --- SVG の生成 ---
+        // 追加: 鉱石及び対応する穴のカラーマッピングを定義
+        const mineralColors = {
+          "a": "lightgreen",  // 鉱石 a の色
+          "b": "lightblue",   // 鉱石 b の色
+          "c": "lightcoral"   // 鉱石 c の色
+        };
+
+        const cellSize = 40;
+        const svgNS = "http://www.w3.org/2000/svg";
+        const width = cellSize * N;
+        const height = cellSize * N;
+        const svg = document.createElementNS(svgNS, "svg");
+        svg.setAttribute("width", width);
+        svg.setAttribute("height", height);
+        svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
+        // 追加: 転がす矢印表示用のマーカー定義
+        const defs = document.createElementNS(svgNS, "defs");
+        const marker = document.createElementNS(svgNS, "marker");
+        marker.setAttribute("id", "arrow");
+        marker.setAttribute("markerWidth", "10");
+        marker.setAttribute("markerHeight", "10");
+        marker.setAttribute("refX", "0");
+        marker.setAttribute("refY", "3");
+        marker.setAttribute("orient", "auto");
+        const arrowPath = document.createElementNS(svgNS, "path");
+        arrowPath.setAttribute("d", "M0,0 L0,6 L6,3 z");
+        arrowPath.setAttribute("fill", "red");
+        marker.appendChild(arrowPath);
+        defs.appendChild(marker);
+        svg.appendChild(defs);
+        for (let i = 0; i < N; i++) {
+          for (let j = 0; j < N; j++) {
+            const rect = document.createElementNS(svgNS, "rect");
+            rect.setAttribute("x", j * cellSize);
+            rect.setAttribute("y", i * cellSize);
+            rect.setAttribute("width", cellSize);
+            rect.setAttribute("height", cellSize);
+            // 背景：穴の場合は対応する鉱石色、その他は白
+            rect.setAttribute("fill", base[i][j] !== '.' ? (mineralColors[base[i][j].toLowerCase()] || "#ADD8E6") : "white");
+            rect.setAttribute("stroke", "black");
+            rect.setAttribute("stroke-width", "1");
+            // 追加: マウスオーバー時にセルの座標をツールチップとして表示する
+            const tooltip = document.createElementNS(svgNS, "title");
+            tooltip.textContent = "(" + i + ", " + j + ")";
+            rect.appendChild(tooltip);
+            svg.appendChild(rect);
+            
+            if (objectBoard[i][j] !== null) {
+              const obj = objectBoard[i][j];
+              const circle = document.createElementNS(svgNS, "circle");
+              circle.setAttribute("cx", j * cellSize + cellSize / 2);
+              circle.setAttribute("cy", i * cellSize + cellSize / 2);
+              circle.setAttribute("r", cellSize / 3);
+              // 岩はグレー、それ以外の鉱石は対応する色を使用
+              let fillColor = obj === '@' ? "gray" : (mineralColors[obj] || "lightgreen");
+              circle.setAttribute("fill", fillColor);
+              svg.appendChild(circle);
+    
+              const text = document.createElementNS(svgNS, "text");
+              text.setAttribute("x", j * cellSize + cellSize / 2);
+              text.setAttribute("y", i * cellSize + cellSize / 2 + 5);
+              text.setAttribute("text-anchor", "middle");
+              text.setAttribute("font-size", "16");
+              text.textContent = obj;
+              svg.appendChild(text);
+            }
+          }
+        }
+        // プレイヤーの位置を赤い輪郭の円で表示
+        const playerCircle = document.createElementNS(svgNS, "circle");
+        playerCircle.setAttribute("cx", player[1] * cellSize + cellSize / 2);
+        playerCircle.setAttribute("cy", player[0] * cellSize + cellSize / 2);
+        playerCircle.setAttribute("r", cellSize / 4);
+        playerCircle.setAttribute("fill", "none");
+        playerCircle.setAttribute("stroke", "red");
+        playerCircle.setAttribute("stroke-width", "3");
+        svg.appendChild(playerCircle);
+    
+        // 盤面描画後、転がすアクションの矢印が記録されていればSVGへ追加
+        if (rollArrowData !== null) {
+          const arrowLine = document.createElementNS(svgNS, "line");
+          arrowLine.setAttribute("x1", rollArrowData.startCol * cellSize + cellSize / 2);
+          arrowLine.setAttribute("y1", rollArrowData.startRow * cellSize + cellSize / 2);
+          arrowLine.setAttribute("x2", rollArrowData.endCol * cellSize + cellSize / 2);
+          arrowLine.setAttribute("y2", rollArrowData.endRow * cellSize + cellSize / 2);
+          arrowLine.setAttribute("stroke", "red");
+          arrowLine.setAttribute("stroke-width", "2");
+          arrowLine.setAttribute("marker-end", "url(#arrow)");
+          svg.appendChild(arrowLine);
+        }
+
+        // --- 追加部分: 現在のターンの出力内容を id="action" に表示 ---
+        if (movesToSimulate > 0) {
+          // movesToSimulate で示される現在のターンの操作内容を表示
+          const currentAction = moveLines[movesToSimulate - 1];
+          document.getElementById("action").innerHTML = "Turn " + movesToSimulate.toString().padStart(4, '0') + "= " + currentAction;
+        } else {
+          document.getElementById("action").innerHTML = "No Action";
+        }
+
+        return { score_t: score_t, svgjs: svg };
+      } catch (error) {
+        console.error("vis 関数でエラーが発生:", error);
+        throw error;
+      }
     }
   </script>
 </body>
